@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: c360
+          POSTGRES_PASSWORD: c360
+          POSTGRES_DB: c360
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U c360" --health-interval 5s --health-retries 20
+    env:
+      C360_PG_DSN: postgresql://c360:c360@localhost:5432/c360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests dags
+      - name: Tests (unit + SCD2 integration)
+        run: pytest -q
+      - name: Shell scripts
+        run: bash -n scripts/*.sh superset/bootstrap.sh

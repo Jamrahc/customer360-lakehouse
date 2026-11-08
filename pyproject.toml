@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "customer360-lakehouse"
+version = "0.1.0"
+description = "Customer 360 lakehouse: core banking, CRM and app events unified with PySpark, Delta Lake, Kafka and PostgreSQL"
+requires-python = ">=3.10"
+dependencies = [
+    "pyspark==4.0.1",
+    "delta-spark==4.0.0",
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "pyarrow>=16",
+    "psycopg[binary]>=3.2",
+    "pymongo>=4.8",
+    "kafka-python-ng>=2.2",
+    "faker>=30",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mongomock>=4.1"]
+
+[project.scripts]
+c360 = "c360.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"c360.generate" = ["*.sql"]
+"c360.warehouse" = ["sql/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs PostgreSQL (set C360_PG_DSN)"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008", "B905"]

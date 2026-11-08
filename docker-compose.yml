@@ -1,0 +1,135 @@
+# Local stack. Core services start by default; add `--profile orchestration`
+# (Airflow, n8n) and/or `--profile bi` (Superset). See the Makefile shortcuts.
+name: customer360
+
+x-c360-env: &c360-env
+  C360_PG_DSN: postgresql://c360:c360@postgres:5432/c360
+  C360_MONGO_URI: mongodb://mongo:27017
+  C360_KAFKA_BOOTSTRAP: kafka:9092
+  C360_LAKE_PATH: /data/lake
+  C360_LOG_DIR: /data/logs
+  C360_N_CUSTOMERS: ${C360_N_CUSTOMERS:-3000}
+  C360_HISTORY_DAYS: ${C360_HISTORY_DAYS:-120}
+  C360_N8N_WEBHOOK: http://n8n:5678/webhook/c360-pipeline
+
+services:
+  # ---------------------------------------------------------------- sources --
+  postgres:            # core banking source + reporting warehouse (dwh schema)
+    image: postgres:16
+    environment:
+      POSTGRES_USER: c360
+      POSTGRES_PASSWORD: c360
+      POSTGRES_DB: c360
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U c360"]
+      interval: 5s
+      retries: 20
+
+  mongo:               # CRM interactions (document store)
+    image: mongo:7.0
+    ports: ["27017:27017"]
+    volumes: [mongodata:/data/db]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      retries: 20
+
+  kafka:               # mobile-app event stream (KRaft mode, no ZooKeeper)
+    image: apache/kafka:3.9.1
+    ports: ["9094:9094"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      retries: 20
+
+  # --------------------------------------------------------------- pipeline --
+  app:                 # PySpark + Delta Lake pipeline runner
+    build: .
+    environment: *c360-env
+    volumes:
+      - lake:/data
+      - ivy:/root/.ivy2.5.2          # cache of Spark connector jars between runs
+      - ./src:/opt/c360/src
+      - ./scripts:/opt/c360/scripts
+      - ./tests:/opt/c360/tests
+    depends_on:
+      postgres: {condition: service_healthy}
+      mongo: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+
+  # ---------------------------------------------------------- orchestration --
+  airflow:
+    profiles: [orchestration]
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    command: standalone
+    ports: ["8080:8080"]
+    environment:
+      <<: *c360-env
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://c360:c360@postgres:5432/airflow
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Dhaka
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/c360/scripts
+      - ./src:/opt/c360/src
+      - lake:/data
+      - ivy:/home/airflow/.ivy2.5.2
+    user: "0:0"   # shares the lake volume with the app container
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  n8n:                 # report distribution after each pipeline run
+    profiles: [orchestration]
+    image: n8nio/n8n:1.64.0
+    ports: ["5678:5678"]
+    environment:
+      GENERIC_TIMEZONE: Asia/Dhaka
+      N8N_SECURE_COOKIE: "false"
+    volumes:
+      - n8ndata:/home/node/.n8n
+      - ./n8n:/workflows:ro
+
+  # --------------------------------------------------------------------- BI --
+  superset:
+    profiles: [bi]
+    build:
+      context: .
+      dockerfile: docker/superset.Dockerfile
+    ports: ["8088:8088"]
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-local-dev-only-change-me}
+      SUPERSET_CONFIG_PATH: /app/superset_config.py
+    volumes:
+      - ./docker/superset_config.py:/app/superset_config.py:ro
+      - ./superset/bootstrap.sh:/app/bootstrap.sh:ro
+    command: ["/bin/bash", "/app/bootstrap.sh"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  mongodata:
+  lake:
+  ivy:
+  n8ndata:

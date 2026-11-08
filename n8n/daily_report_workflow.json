@@ -1,0 +1,70 @@
+{
+  "name": "Customer 360 - daily report",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "c360-pipeline",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "5f0c1a6e-0001-4c1e-9d2a-000000000001",
+      "name": "Pipeline finished",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "c360-pipeline"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT k.kpi_date, k.transactions, k.transaction_value, k.app_daily_active_users, k.complaints_opened, k.accounts_closed,\n       (SELECT count(*) FROM dwh.customer_churn_scores s WHERE s.scored_on = k.kpi_date AND s.risk_band = 'High') AS high_churn_risk,\n       (SELECT count(*) FROM dwh.dq_results d WHERE NOT d.passed) AS dq_issues,\n       (SELECT round(100.0 * sum(outstanding) FILTER (WHERE ifrs9_stage = 'Stage 3') / sum(outstanding), 2) FROM dwh.mart_portfolio_quality) AS stage3_pct\nFROM dwh.mart_kpi_daily k\nORDER BY k.kpi_date DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "5f0c1a6e-0002-4c1e-9d2a-000000000002",
+      "name": "Read latest KPIs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [260, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const k = $input.first().json;\nconst fmt = n => Number(n).toLocaleString('en-US');\nconst text = [\n  `Customer 360 daily summary for ${k.kpi_date}`,\n  ``,\n  `Transactions: ${fmt(k.transactions)} (value BDT ${fmt(k.transaction_value)})`,\n  `App daily active users: ${fmt(k.app_daily_active_users)}`,\n  `Complaints opened: ${k.complaints_opened} | Accounts closed: ${k.accounts_closed}`,\n  `Customers at high churn risk: ${k.high_churn_risk}`,\n  `Stage 3 share of loan book: ${k.stage3_pct}%`,\n  `Data quality issues: ${k.dq_issues}`\n].join('\\n');\nreturn [{ json: { subject: `Customer 360 | ${k.kpi_date}`, text, dq_issues: Number(k.dq_issues) } }];"
+      },
+      "id": "5f0c1a6e-0003-4c1e-9d2a-000000000003",
+      "name": "Format summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 0]
+    },
+    {
+      "parameters": {
+        "fromEmail": "data-platform@example.com",
+        "toEmail": "management@example.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {}
+      },
+      "id": "5f0c1a6e-0004-4c1e-9d2a-000000000004",
+      "name": "Email management",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [780, 0],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Pipeline finished": {
+      "main": [[{ "node": "Read latest KPIs", "type": "main", "index": 0 }]]
+    },
+    "Read latest KPIs": {
+      "main": [[{ "node": "Format summary", "type": "main", "index": 0 }]]
+    },
+    "Format summary": {
+      "main": [[{ "node": "Email management", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}
